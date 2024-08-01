@@ -1,0 +1,123 @@
+const express = require('express');
+const axios = require('axios');
+const { parseStringPromise } = require('xml2js');
+const cors = require('cors');
+const app = express();
+const port = 3000;
+
+app.use(cors());
+
+// Simulate the weather station repository and primary data repository
+const weatherStationRepository = {
+  getAllWeatherStations: () => [
+    { Code: 'ΠΡΩΤΕΥΩΝ 1_51394', Id: 83 },
+    { Code: 'ΠΡΩΤΕΥΩΝ 2_863830', Id: 104 },
+
+    // Add more stations as needed
+  ]
+};
+
+const primaryDataRepository = {
+  addPrimaryData: (data) => {
+    console.log('Data added:', data);
+  }
+};
+
+const baseUrl = 'http://195.130.86.119:8080';
+const username = 'PRESPES';
+const password = 'LOUTA';
+
+app.get('/getAdvantagePrimaryData', async (req, res) => {
+  try {
+    const client = axios.create({
+      baseURL:  baseUrl,
+    });
+
+    // Login to the Advantage API
+    const loginResponse = await client.get(`/addUPI?function=login&user=${username}&passwd=${password}`);
+
+    const loginResult = await parseStringPromise(loginResponse.data);
+    const sessionId = loginResult.response?.result?.[0]?.['string']?.[0];
+    // const sessionId = '3a612ce7-bed2-4595-a5c2-421dc58e46a3';
+
+    if (!sessionId) {
+      console.error('Failed to retrieve session ID.');
+      throw new Error('Failed to retrieve session ID.');
+    }
+
+    // Retrieve weather stations
+    const weatherStationsList = weatherStationRepository.getAllWeatherStations();
+
+    for (const ws of weatherStationsList) {
+      console.log(`Fetching data for weather station ${ws.Code}...`);
+      // Fetch data for each weather station
+      const getDataResponse = await client.get(`/addUPI?function=getdata&session-id=${sessionId}&id=${ws.Id}&df=time_t`);
+      const dataResult = await parseStringPromise(getDataResponse.data);
+
+      const root = dataResult.response
+
+
+      const primaryData = {
+        Timestamp: new Date(),
+        WeatherStationId: ws.Id,
+      };
+
+      const elements = root.node || [];
+
+      // Helper function to map XML nodes to PrimaryData properties
+      const mapNodesToProperty = (ids, property) => {
+        elements.forEach(el => {
+
+          if (ids.includes(el.$.id)) {
+            const timestamp = el.v?.[0]?.$?.t;
+            if (timestamp) {
+              primaryData.ActualMeasurement = new Date(timestamp * 1000);
+            }
+            primaryData[property] = parseFloat(el.v[0]._);
+          }
+        });
+      };
+
+
+      mapNodesToProperty(['99', '141', '20'], 'ChargingRegulator');
+      mapNodesToProperty(['100', '153', '19', '108'], 'SoilMoisture');
+      mapNodesToProperty(['86', '146', '23'], 'SoilMoisture10');
+      mapNodesToProperty(['88', '147', '24'], 'SoilMoisture20');
+      mapNodesToProperty(['92', '148', '26'], 'SoilMoisture30');
+      mapNodesToProperty(['89', '145', '15'], 'RelativeHumidity');
+      mapNodesToProperty(['87'], 'Sunshine30');
+      mapNodesToProperty(['93', '155'], 'WindDirection');
+      mapNodesToProperty(['95', '154'], 'WindSpeed');
+      mapNodesToProperty(['101', '150', '17'], 'SoilTemperature');
+      mapNodesToProperty(['85', '142', '22'], 'Temperature');
+      mapNodesToProperty(['90', '143', '16'], 'InternalTemperature');
+      mapNodesToProperty(['84', '151', '18'], 'BatteryVoltage');
+      mapNodesToProperty(['91', '152', '25'], 'LeafWetness');
+      mapNodesToProperty(['102'], 'PARTotal');
+      mapNodesToProperty(['94'], 'PARDiffuse');
+      mapNodesToProperty(['97'], 'BarometricPressure');
+      mapNodesToProperty(['96', '149', '21'], 'SoilConductivity');
+
+      // Handle Precipitation separately due to additional processing
+      elements.forEach(el => {
+        if (['98', '144'].includes(el.$.id)) {
+          primaryData.Precipitation = parseFloat(el.v[0]._);
+          const timestamp = el.v?.[0]?.$?.t;
+          if (timestamp) {
+            primaryData.ActualMeasurement = new Date(timestamp * 1000);
+          }
+        }
+      });
+      // Add the primary data to the repository
+      primaryDataRepository.addPrimaryData(primaryData);
+    }
+    console.log('Data fetched successfully.');
+    res.status(200).send('OK');
+  } catch (error) {
+    res.status(400).send(`Error getting data from AdvantageAPI: ${error.message}`);
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Server running at http://localhost:${port}`);
+});
